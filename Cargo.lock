@@ -732,6 +732,7 @@ dependencies = [
 name = "new_tokens_listener"
 version = "0.1.0"
 dependencies = [
+ "futures",
  "tokio",
  "web3",
 ]

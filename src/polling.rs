@@ -56,13 +56,20 @@ where
         Ok(new_blocks) => new_blocks,
         Err(_allocation_error) => return Err(BlocksGettingError::TooManyBlocks),
     };
-    for block_id in (after + 1)..=current_block_id {
-        new_blocks.push(match client.eth().block(make_block_id(block_id)).await {
-            Ok(maybe_block) => maybe_block.expect("Block must exist"),
+    for block in futures::future::join_all(
+        (after + 1..=current_block_id).map(|block_id| client.eth().block(make_block_id(block_id))),
+    )
+    .await
+    {
+        match block {
+            Ok(optional_block) => new_blocks.push(optional_block.expect(
+                "The block must exist, since its number is smaller than or equal to \
+                the last block nubmer",
+            )),
             Err(request_error) => {
                 return Err(BlocksGettingError::ServerRequestError(request_error))
             }
-        });
+        }
     }
     Ok(new_blocks)
 }
@@ -96,9 +103,5 @@ impl<'poller, Transport: web3::Transport> Poller<'poller, Transport> {
         self.latest_known_block_number += u64::try_from(new_blocks.len())
             .expect("Blocks amount can't be bigger than u64 (by Ethereum's definition)");
         Ok(new_blocks)
-    }
-
-    pub const fn latest_known_block_number(&self) -> BlockNumber {
-        self.latest_known_block_number
     }
 }
