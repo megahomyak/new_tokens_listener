@@ -61,11 +61,7 @@ where
     .await
     {
         match block {
-            Ok(optional_block) => {
-                let block = optional_block.expect(
-                    "The block must exist, since its number is smaller than or equal to \
-                    the last block nubmer",
-                );
+            Ok(Some(block)) => {
                 if let (Some(number), Some(hash)) = (block.number, block.hash) {
                     new_blocks.push(Block {
                         hash,
@@ -74,6 +70,7 @@ where
                     });
                 }
             }
+            Ok(None) => (),
             Err(request_error) => {
                 return Err(BlocksGettingError::ServerRequestError(request_error))
             }
