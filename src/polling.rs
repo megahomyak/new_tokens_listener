@@ -30,8 +30,8 @@ pub enum BlocksGettingError {
     ServerRequestError(web3::Error),
 }
 
-/// Returns only blocks with numbers, i.e. non-pending blocks. If the block number specified is too
-/// big (bigger than the current block number from the web3 client), an empty vector is returned.
+/// Returns only complete blocks. If the block number specified is too big (bigger than the current
+/// block number from the web3 client), an empty vector is returned.
 pub async fn get_new_blocks<Transport>(
     client: &Web3<Transport>,
     after: BlockNumber,
@@ -79,6 +79,7 @@ where
             }
         }
     }
+    new_blocks.shrink_to_fit();
     Ok(new_blocks)
 }
 
