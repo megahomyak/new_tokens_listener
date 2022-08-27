@@ -1,9 +1,8 @@
 use std::collections::TryReserveError;
 
-use web3::{
-    types::{Block, H256},
-    Web3,
-};
+use web3::Web3;
+
+use crate::block::Block;
 
 pub trait TryWithCapacity<T> {
     fn try_with_capacity(capacity: usize) -> Result<Vec<T>, TryReserveError>;
@@ -29,14 +28,14 @@ pub enum BlocksGettingError {
     TooManyBlocks,
     /// An error occured when making a request to the blockchain RPC server
     ServerRequestError(web3::Error),
-    /// Block with the passed block ID does not exist yet
-    BeginningDoesNotExist,
 }
 
+/// Returns only blocks with numbers, i.e. non-pending blocks. If the block number specified is too
+/// big (bigger than the current block number from the web3 client), an empty vector is returned.
 pub async fn get_new_blocks<Transport>(
     client: &Web3<Transport>,
     after: BlockNumber,
-) -> Result<Vec<Block<H256>>, BlocksGettingError>
+) -> Result<Vec<Block>, BlocksGettingError>
 where
     Transport: web3::Transport + Send + Sync,
     Transport::Out: Send,
@@ -46,7 +45,7 @@ where
         Err(request_error) => return Err(BlocksGettingError::ServerRequestError(request_error)),
     };
     if current_block_id < after {
-        return Err(BlocksGettingError::BeginningDoesNotExist);
+        return Ok(Vec::new());
     }
     let new_blocks_amount = current_block_id - after;
     let mut new_blocks = match Vec::try_with_capacity(match new_blocks_amount.try_into() {
@@ -62,10 +61,19 @@ where
     .await
     {
         match block {
-            Ok(optional_block) => new_blocks.push(optional_block.expect(
-                "The block must exist, since its number is smaller than or equal to \
-                the last block nubmer",
-            )),
+            Ok(optional_block) => {
+                let block = optional_block.expect(
+                    "The block must exist, since its number is smaller than or equal to \
+                    the last block nubmer",
+                );
+                if let (Some(number), Some(hash)) = (block.number, block.hash) {
+                    new_blocks.push(Block {
+                        hash,
+                        number: number.as_u64(),
+                        transaction_ids: block.transactions,
+                    });
+                }
+            }
             Err(request_error) => {
                 return Err(BlocksGettingError::ServerRequestError(request_error))
             }
@@ -90,7 +98,7 @@ impl<'poller, Transport: web3::Transport> Poller<'poller, Transport> {
         }
     }
 
-    pub async fn get_new_blocks(&mut self) -> Result<Vec<Block<H256>>, BlocksGettingError>
+    pub async fn get_new_blocks(&mut self) -> Result<Vec<Block>, BlocksGettingError>
     where
         Transport: Send + Sync,
         Transport::Out: Send,
@@ -100,8 +108,9 @@ impl<'poller, Transport: web3::Transport> Poller<'poller, Transport> {
             self.latest_known_block_number,
         )
         .await?;
-        self.latest_known_block_number += u64::try_from(new_blocks.len())
-            .expect("Blocks amount can't be bigger than u64 (by Ethereum's definition)");
+        if !new_blocks.is_empty() {
+            self.latest_known_block_number = new_blocks[new_blocks.len() - 1].number;
+        }
         Ok(new_blocks)
     }
 }

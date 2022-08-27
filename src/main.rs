@@ -9,8 +9,10 @@ use polling::Poller;
 use tokio::sync::Mutex;
 
 mod polling;
+mod block;
 
-/// Guaranteed to execute `action` with at least `duration` of time between two executions, trying to invoke `action` as frequently as possible.
+/// Guaranteed to execute `action` with at least `duration` of time between two executions, trying
+/// to invoke `action` as frequently as possible.
 pub async fn every<Breaker: Send, Fut: Future<Output = ControlFlow<Breaker>> + Send>(
     duration: Duration,
     mut action: impl FnMut() -> Fut + Send,
@@ -52,7 +54,7 @@ async fn main() {
             if !new_blocks.is_empty() {
                 println!("-----");
                 for block in &new_blocks {
-                    println!("{:x}", block.hash.unwrap());
+                    println!("{:x}", block.hash);
                 }
             }
             ControlFlow::<(), ()>::Continue(())
