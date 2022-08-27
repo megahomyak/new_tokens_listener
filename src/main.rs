@@ -1,37 +1,10 @@
-use std::{
-    future::Future,
-    ops::ControlFlow,
-    sync::Arc,
-    time::{Duration, SystemTime},
-};
+use std::time::{Duration, SystemTime};
 
 use polling::Poller;
-use tokio::sync::Mutex;
 
-mod polling;
 mod block;
-
-/// Guaranteed to execute `action` with at least `duration` of time between two executions, trying
-/// to invoke `action` as frequently as possible.
-pub async fn every<Breaker: Send, Fut: Future<Output = ControlFlow<Breaker>> + Send>(
-    duration: Duration,
-    mut action: impl FnMut() -> Fut + Send,
-) -> Breaker {
-    loop {
-        let beginning = SystemTime::now();
-        if let ControlFlow::Break(breaker) = action().await {
-            break breaker;
-        }
-        match beginning.elapsed() {
-            Ok(time_taken) => {
-                if let Some(remaining_time) = duration.checked_sub(time_taken) {
-                    tokio::time::sleep(remaining_time).await;
-                }
-            }
-            Err(_subtraction_error) => tokio::time::sleep(duration).await,
-        };
-    }
-}
+mod polling;
+mod interval_ensurer;
 
 #[tokio::main]
 async fn main() {
@@ -43,22 +16,36 @@ async fn main() {
         .await
         .unwrap()
         .as_u64();
-    let poller = Arc::new(Mutex::new(Poller::new(
-        last_block_number,
-        &blockchain_client,
-    )));
-    every(Duration::from_millis(20), move || {
-        let poller = poller.clone();
-        async move {
-            let new_blocks = poller.lock().await.get_new_blocks().await.unwrap();
-            if !new_blocks.is_empty() {
-                println!("-----");
-                for block in &new_blocks {
-                    println!("{:x}", block.hash);
+    let mut poller = Poller::new(last_block_number, &blockchain_client);
+    let poll_interval = Duration::from_millis(20);
+    loop {
+        let beginning = SystemTime::now();
+
+        let new_blocks = poller.get_new_blocks().await.unwrap();
+        let mut hashes_were_printed = false;
+        for transaction in futures::future::join_all(
+            new_blocks
+                .into_iter()
+                .flat_map(|block| block.transaction_ids)
+                .map(|transaction_id| blockchain_client.eth().transaction(transaction_id.into())),
+        )
+        .await
+        .into_iter()
+        .filter_map(|transaction| transaction.ok().and_then(std::convert::identity))
+        {
+            println!("{:x}", transaction.hash);
+            hashes_were_printed = true;
+        }
+        if hashes_were_printed {
+            println!("-----");
+        }
+        match beginning.elapsed() {
+            Ok(time_taken) => {
+                if let Some(remaining_time) = poll_interval.checked_sub(time_taken) {
+                    tokio::time::sleep(remaining_time).await;
                 }
             }
-            ControlFlow::<(), ()>::Continue(())
-        }
-    })
-    .await;
+            Err(_subtraction_error) => tokio::time::sleep(poll_interval).await,
+        };
+    }
 }
