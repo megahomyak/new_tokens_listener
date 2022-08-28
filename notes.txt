@@ -1,0 +1,7 @@
+async {
+    post_process(smth.await)
+} <- incorporate this into an iterator
+
+iterator -> iterator of futures
+every next iterator will have to await the future inside itself
+next(): return an async block that returns inner.next() at the end
