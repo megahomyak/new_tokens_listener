@@ -1,5 +1,6 @@
 use std::collections::TryReserveError;
 
+use futures::{stream, Future, Stream, StreamExt};
 use web3::Web3;
 
 use crate::block::Block;
@@ -23,61 +24,56 @@ pub fn make_block_id(number: u64) -> web3::types::BlockId {
 type BlockNumber = u64;
 
 #[derive(Debug)]
-pub enum BlocksGettingError {
-    /// Emitted when there are so many blocks that a vector can't be allocated for them
-    TooManyBlocks,
+pub enum CurrentBlockIdGettingError {
     /// An error occured when making a request to the blockchain RPC server
     ServerRequestError(web3::Error),
 }
 
-/// Returns only complete blocks. If the block number specified is too big (bigger than the current
-/// block number from the web3 client), an empty vector is returned.
-pub async fn get_new_blocks<Transport>(
-    client: &Web3<Transport>,
+#[derive(Debug)]
+pub enum BlockGettingError {
+    NoSuchBlock,
+    /// Emitted when the received block information is incomplete
+    Incomplete,
+    /// An error occured when making a request to the blockchain RPC server
+    ServerRequestError(web3::Error),
+}
+
+pub async fn get_new_blocks<'client, Transport>(
+    client: &'client Web3<Transport>,
     after: BlockNumber,
-) -> Result<Vec<Block>, BlocksGettingError>
+) -> Result<impl Stream<Item = Result<Block, BlockGettingError>> + 'client, CurrentBlockIdGettingError>
 where
     Transport: web3::Transport + Send + Sync,
     Transport::Out: Send,
 {
     let current_block_id = match client.eth().block_number().await {
         Ok(block_id) => block_id.as_u64(),
-        Err(request_error) => return Err(BlocksGettingError::ServerRequestError(request_error)),
+        Err(request_error) => {
+            return Err(CurrentBlockIdGettingError::ServerRequestError(
+                request_error,
+            ))
+        }
     };
-    if current_block_id < after {
-        return Ok(Vec::new());
-    }
-    let new_blocks_amount = current_block_id - after;
-    let mut new_blocks = match Vec::try_with_capacity(match new_blocks_amount.try_into() {
-        Ok(new_blocks_amount) => new_blocks_amount,
-        Err(_conversion_error) => return Err(BlocksGettingError::TooManyBlocks),
-    }) {
-        Ok(new_blocks) => new_blocks,
-        Err(_allocation_error) => return Err(BlocksGettingError::TooManyBlocks),
-    };
-    for block in futures::future::join_all(
+    Ok(stream::iter(
         (after + 1..=current_block_id).map(|block_id| client.eth().block(make_block_id(block_id))),
     )
-    .await
-    {
-        match block {
+    .map(|block| async {
+        match block.await {
             Ok(Some(block)) => {
                 if let (Some(number), Some(hash)) = (block.number, block.hash) {
-                    new_blocks.push(Block {
+                    Ok(Block {
                         hash,
                         number: number.as_u64(),
                         transaction_ids: block.transactions,
-                    });
+                    })
+                } else {
+                    Err(BlockGettingError::Incomplete)
                 }
             }
-            Ok(None) => (),
-            Err(request_error) => {
-                return Err(BlocksGettingError::ServerRequestError(request_error))
-            }
+            Ok(None) => Err(BlockGettingError::NoSuchBlock),
+            Err(request_error) => Err(BlockGettingError::ServerRequestError(request_error)),
         }
-    }
-    new_blocks.shrink_to_fit();
-    Ok(new_blocks)
+    }))
 }
 
 pub struct Poller<'poller, Transport: web3::Transport> {
